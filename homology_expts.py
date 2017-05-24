@@ -10,11 +10,11 @@
 
         step : homology
         pdb source: None
-        start structure: 'inputs/STRUCT.pdb'
+        start structure: 'inputs/alk_active.pdb'
         template chain : [['A',0,0]]
-        point mutation : {}
+        point mutation : {'A':['F1174L']}
         number HETATMs : {}
         target name : alk_active_F1174L
-        many models : 1
+        many models : 20
         """}
 }
