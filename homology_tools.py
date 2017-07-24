@@ -133,9 +133,8 @@ def get_all_chains(**state):
 	"""
  	
 	settings=state['settings']
-	if 'start_structure' in settings and settings['start_structure']:
-		sequence_info=sequence_from_atoms()
-	else: raise Exception('\n[ERROR] reading a pdb is not yet implemented')
+	try: sequence_info=sequence_from_atoms()
+	except:	raise Exception('\n[ERROR] you must point to a complete structure with no gaps [WARN:UPDATE NEEDED]')
 	
 	template_seqs={}
 	if type(settings['template_chain'])==list:
