@@ -49,11 +49,25 @@ def write_ali_file(fasta_linelen=50,**state):
 	step=state['step']
 	target_name=settings['target_name']
 	target_seqs=state['chains_info']
+	chains=[chain for chain in target_seqs]
+	num_template_res=sum([len(target_seqs[chain]['template_seq']) for chain in chains])
+	num_target_res=sum([len(target_seqs[chain]['target_seq']) for chain in chains])
+	first_chain=sorted(chains)[0];last_chain=sorted(chains)[-1]
 	with open(os.path.join(step,'%s.ali'%target_name),'w') as fp:
 		fp.write('>P1;'+target_name+'\n')
-		fp.write('sequence:'+target_name+':::::::0.00:0.00\n')
+		fp.write('structureX:start-structure:1:%s:%s:%s:::0.00:0.00\n'%(first_chain,num_template_res,last_chain))
 		for chain_id in target_seqs:
-			seq = target_seqs[chain_id]['sequence']
+			seq = target_seqs[chain_id]['template_seq']
+			chopped = [seq[j*fasta_linelen:(j+1)*fasta_linelen] 
+					   for j in range(len(seq)/fasta_linelen+1)]
+			chopped = [i for i in chopped if len(i) > 0]
+			for i,seg in enumerate(chopped): fp.write(seg+'\n')
+			fp.write('/\n')
+		fp.write('*\n')
+		fp.write('>P1;'+target_name+'\n')
+		fp.write('sequence:%s:1:%s:%s:%s:::0.00:0.00\n'%(target_name,first_chain,num_target_res,last_chain))
+		for chain_id in target_seqs:
+			seq = target_seqs[chain_id]['target_seq']
 			chopped = [seq[j*fasta_linelen:(j+1)*fasta_linelen] 
 					   for j in range(len(seq)/fasta_linelen+1)]
 			chopped = [i for i in chopped if len(i) > 0]
@@ -121,10 +135,105 @@ def sequence_from_atoms():
 			sequence=''.join([aacodemap_3to1[i] for i in zip(*seqs[chain])[1]])	
 			startres = int(seqs[chain][0][0])
 			stopres = int(seqs[chain][-1][0])
-			sequence_info[chain]={'startres':startres,'stopres':stopres,'sequence':sequence}
+			sequence_info[chain]={'sequence':sequence,
+								  'indexinfo':{'cryst_start':startres,'cryst_end':stopres}}
 	return sequence_info
 
 def get_all_chains(**state):
+  		  
+	"""
+	prepare the chains from a pbd for writing an ali file
+	
+	still needs to print a note on mutations
+	"""
+ 	
+	settings=state['settings']
+	if all(['indexinfo' and 'sequence' in state['pdbinfo'][chain] for chain in state['pdbinfo']]):
+		sequence_info=state['pdbinfo']
+	else:
+		try: sequence_info=sequence_from_atoms()
+		except:	raise Exception('\n[ERROR] you must either a complete structure with no ' +
+								'gaps or a properly formatted pdb file')
+
+	except_str='\n[ERROR] you must supply a dict of chains you want to include' \
+		'in format {"chain_id": {"startres":int, "stopres":int}} but ' \
+		'%s was supplied'%settings['template_chain']
+	template_seqs={}
+	if type(settings['template_chain'])==dict:
+		for chain,locs in settings['template_chain'].items():
+			# keep only requested residues and use requested numbering for each chain
+			if not all(['startres' and 'stopres' in locs]):
+				raise Exception(except_str)
+			startres=locs['startres']
+			stopres=locs['stopres']
+
+			sequence = sequence_info[chain]['sequence']
+			#first we need to clip off any residues which are crystalization artifacts
+			if 'artifact' in sequence_info[chain]:
+				if not 'cryst_start' in sequence_info[chain]['indexinfo']:
+					raise Exception('[ERROR] The pdb file you supplied has SEQADV but no DBREF remarks' +
+									'please ensure that your pdb file is properly formatted')
+				artifacts=sequence_info[chain]['artifact'].keys()
+				popped=''.join(['\t%d-%s\n'%(art,sequence_info[chain]['missing'].pop(art))
+								for art in artifacts])
+				print('[NOTE] removed residues from missing residues list of chain %s because ' \
+					  'they are artifacts:\n%s'%(chain,popped))
+				min_artifact=min(artifacts)
+				max_artifact=max(artifacts)
+				if min_artifact<sequence_info[chain]['indexinfo']['cryst_start']:
+					before_start=sequence_info[chain]['indexinfo']['cryst_start']-min_artifact
+					print('[NOTE] removing residues %s from the begining of chain %s'%(before_start,chain))
+				else: before_start=0
+				if max_artifact>sequence_info[chain]['indexinfo']['cryst_end']:
+					after_end=max_artifact-sequence_info[chain]['indexinfo']['cryst_end']
+					print('[NOTE] removing %s residues from the end of chain %s'%(after_end,chain))
+				else: after_end=0
+				sequence=sequence[before_start:len(sequence)-after_end]
+
+			
+			#make sequnce with dashes for use in modeller .ali file
+			if 'missing' in sequence_info[chain]:
+				missing=sequence_info[chain]['missing']
+				if not 'cryst_start' in sequence_info[chain]['indexinfo']:
+					raise Exception('[ERROR] The pdb file you supplied has REMARK 465 but no DBREF remark' +
+									'please ensure that your pdb file is properly formatted')			
+				begin=int(sequence_info[chain]['indexinfo']['cryst_start'])
+				lost=sorted(sequence_info[chain]['missing'].keys())
+				lost=[gone-begin for gone in lost]
+				template_seq=''.join([AA if i not in lost else '-' for i,AA in enumerate(sequence)])
+			else: template_seq=sequence
+
+			#we need to find out what numbering scheme the user wants
+			if settings['numbering']=='uniprot': first_resnum='uniprot_start'
+			elif settings['numbering']=='cryst': first_resnum='cryst_start'
+			elif type(settings['numbering'])==dict:	first_resnum=settings['numbering'][chain]
+			else: raise Exception('\n[ERROR] "numbering" setting must be either "uniprot", ' +
+								  '"cryst", or a dict in format {"chain_id":int}')
+			start_idx = int(sequence_info[chain]['indexinfo'][first_resnum])
+			#if startres and endres are both zero use the whole sequence
+			if startres==0 and stopres==0:
+				#need to supply missing residues to modeller in this format
+				res_to_model=['%d:%s'%(res+1,chain) for res in lost]
+				template_seqs[chain]={'startres':start_idx,'target_seq':sequence,
+									  'template_seq':template_seq,'missing':res_to_model}
+			elif startres-start_idx>=0 and stopres-start_idx<=len(sequence):
+				pre_idx=range(startres-start_idx)
+				post_idx=range(stopres-start_idx,len(sequence))
+				discard_res=pre_idx+post_idx
+				#replace resname with "-" if user requests not to include it
+				target_sequence = ''.join([AA if i not in discard_res else '-' for i,AA
+										   in enumerate(sequence)])
+				#need to supply missing residues to modeller in this format
+				res_to_model=['%d:%s'%(res+1,chain) for res in lost if res not in discard_res]
+				template_seqs[chain]={'startres':startres,'target_seq':target_sequence,
+									  'template_seq':template_seq,'missing':res_to_model}
+			else: raise Exception(except_str)
+
+	else: 
+		raise Exception(except_str)
+	return template_seqs
+
+def get_all_chains_DEP(**state):
   		  
 	"""
  	Extract the sequence of a PDB file using biopython
@@ -134,7 +243,8 @@ def get_all_chains(**state):
  	
 	settings=state['settings']
 	try: sequence_info=sequence_from_atoms()
-	except:	raise Exception('\n[ERROR] you must point to a complete structure with no gaps [WARN:UPDATE NEEDED]')
+	except:	raise Exception('\n[ERROR] you must point to a complete structure with no ' +
+							'gaps [WARN:UPDATE NEEDED]')
 	
 	template_seqs={}
 	if type(settings['template_chain'])==list:
