@@ -25,6 +25,71 @@ aacodemap_3to1 = {'CYS': 'C', 'ASP': 'D', 'SER': 'S', 'GLN': 'Q', 'LYS': 'K',
 
 aacodemap_1to3 = dict([(val,key) for key,val in aacodemap_3to1.items()])
 
+
+def get_pdb_sequence():
+	"""
+	Get the sequence info if it is a properly constructed PDB file
+	"""
+	with open(state.here+'start-structure.pdb','r') as fp: pdb=fp.read()
+	pdblines=pdb.split('\n')
+	#return the one letter code sequence and a dictionary of missing residues
+	#---! note this may fail for pdbs from NMR data
+	regex_seqres = '^SEQRES\s+[0-9]+\s+([A-Z])\s+[0-9]+\s+(.+)'
+	regex_remark = '^REMARK\s465\s{3}\d?\s{1,2}([A-Z]{3})\s([A-Z])\s+(\d+)'
+	regex_dbref = '^DBREF\s{2}(\w{4})\s([A-Z])\s+(\d+)\s+(\d+)\s+UNP\s+\w{6}\s+(\w+)\s+(\d+)\s+(\d+)'
+	regex_seqadv = '^SEQADV\s(\w{4})\s([A-Z]{3})\s([A-Z])\s+(\d+)\s+UNP\s+(\w{6})\s+(\w{3}\s*\d+\s*)?(\w+)'
+	seqinfo={}
+	#use 2-step regex to avoid errors from no matchs
+	seqresli = [li for li,l in enumerate(pdblines) if re.match(regex_seqres,l)]
+	seqraw = [re.findall(regex_seqres,pdblines[li])[0] for li in seqresli]
+	missingli = [li for li,l in enumerate(pdblines) if re.match(regex_remark,l)]
+	missing_res = [re.findall(regex_remark,pdblines[li])[0] for li in missingli]
+	dbrefli = [li for li,l in enumerate(pdblines) if re.match(regex_dbref,l)]
+	dbref = [re.findall(regex_dbref,pdblines[li])[0] for li in dbrefli]
+	seqadvli = [li for li,l in enumerate(pdblines) if re.match(regex_seqadv,l)]
+	seqadv = [re.findall(regex_seqadv,pdblines[li])[0] for li in seqadvli]
+	chains=list(set([elt[0] for elt in seqraw]))
+	for chain in chains:
+		#generate a sequence for each chain from SEQRES remark
+		sequence = ''.join([''.join([aacodemap_3to1[j] for j in i[1].split()]) 
+							for i in seqraw if i[0] == chain])
+		seqinfo[chain]={'missing':{}};seqinfo[chain]['sequence']=sequence
+		#make note of any missing residues based on REMARK 465
+		missing_res_chain=[res for res in missing_res if res[1]==chain]
+		for res in missing_res_chain:
+			seqinfo[chain]['missing'][int(res[2])]=res[0]
+		#record residue numbering info from DBREF remark
+		for ref in dbref:
+			if ref[1]==chain:
+				seqinfo[chain]['indexinfo']={'cryst_start':int(ref[2]),'cryst_end':int(ref[3]),
+											 'uniprot_start':int(ref[5]),'uniprot_end':int(ref[6]),}
+		#record mutations or cloning artifacts based on SEQADV remark
+		for conflict in seqadv:
+			if conflict[2]==chain and 'EXPRESSION' in conflict or 'CLONING' in conflict:
+				#these residues will need to be removed to get the numbering right
+				if 'artifact' in seqinfo[chain]:
+					seqinfo[chain]['artifact'][int(conflict[3])]=conflict[1]
+				else:
+					seqinfo[chain]['artifact']={}
+					seqinfo[chain]['artifact'][int(conflict[3])]=conflict[1]
+			if 'ENGINEERED' in conflict and conflict[2]==chain:
+				#these residues may need to be mutated to have the 'correct' protein sequence
+				#it is left to the user to ensure that the correct sequence is used for any modeling
+				uniprot_res,uniprot_idx=conflict[5].split()
+				if 'mutated' in seqinfo[chain]:
+					seqinfo[chain]['mutated'][int(conflict[3])]={
+						'uniprot_id':conflict[4],
+						'cryst':{int(conflict[3]):conflict[1]},
+						'uniprot':{int(uniprot_idx):uniprot_res}}
+				else:
+					seqinfo[chain]['mutated']={}
+					seqinfo[chain]['mutated'][int(conflict[3])]={
+						'uniprot_id':conflict[4],
+						'cryst':{int(conflict[3]):conflict[1]},
+						'uniprot':{int(uniprot_idx):uniprot_res}}
+	return seqinfo
+
+
 def export_modeller_settings(**state):
 
 	"""
@@ -53,9 +118,13 @@ def write_ali_file(fasta_linelen=50,**state):
 	num_template_res=sum([len(target_seqs[chain]['template_seq']) for chain in chains])
 	num_target_res=sum([len(target_seqs[chain]['target_seq']) for chain in chains])
 	first_chain=sorted(chains)[0];last_chain=sorted(chains)[-1]
+	first_cryst_residx=last_cryst_residx=''
 	with open(os.path.join(step,'%s.ali'%target_name),'w') as fp:
-		fp.write('>P1;'+target_name+'\n')
-		fp.write('structureX:start-structure:1:%s:%s:%s:::0.00:0.00\n'%(first_chain,num_template_res,last_chain))
+		fp.write('>P1;start-structure\n')
+		fp.write('structureX:start-structure:%s:%s:%s:%s:::0.00:0.00\n'%(first_cryst_residx,
+																		 first_chain,
+																		 last_cryst_residx,
+																		 last_chain))
 		for chain_id in target_seqs:
 			seq = target_seqs[chain_id]['template_seq']
 			chopped = [seq[j*fasta_linelen:(j+1)*fasta_linelen] 
@@ -309,26 +378,45 @@ def get_best_structure(**state):
 	results = [(i[0],float(i[1]),float(i[2])) for i in results]
 	best = sorted(results,key=lambda x:x[1])[0][0]
 	with open(os.path.join(state['step'],best)) as fp: lines = fp.readlines()
-	atom_record_start = [ll for ll,l in enumerate(lines) if l[:4]=='ATOM'][0]-1
+	atom_record_start = [ll for ll,l in enumerate(lines) if l[:4]=='ATOM'][0]
+	"""
 	hetatm_records = [','.join([line[17:20],line[21],line[22:26]]) for line in lines if line[:6]=='HETATM']
 	hetatms={}
 	for hetatm in hetatm_records:
 		if hetatm in hetatms: hetatms[hetatm]+=1
 		else: hetatms[hetatm]=1
+	"""
 	seqres = ""
+	if 'numbering' in settings:
+		seqres+='REMARK 6   using %s residue indexing\n'%settings['numbering']
+	for chain in state['chains_info']:
+		additions = ""
+		if 'mutated' in state['pdbinfo'][chain]:
+			for mut_info in state['pdbinfo'][chain]['mutated'].values():
+				uniprot_id=mut_info['uniprot_id']
+				cryst_resname=mut_info['cryst'].values()[0]
+				cryst_residx=mut_info['cryst'].keys()[0]
+				db_name='UNP'
+				db_resname=mut_info['uniprot'].values()[0]
+				db_residx=mut_info['uniprot'].keys()[0]
+				additions+='SEQADV auto %3s %1s %-4d  %-4s %-9s %-3s %-5d ENGINEERED\n'%(
+					cryst_resname,chain,cryst_residx,db_name,uniprot_id,db_resname,db_residx)
+			seqres += additions
 	for chain,details in state['chains_info'].items():
-		sequence=details['sequence'].strip('.')
+		additions = ""
+		sequence=details['target_seq'].strip('.')
 		seq = [aacodemap_1to3[i] for i in sequence]
 		seqlen = len(seq)
 		nrows = seqlen/13+(0 if seqlen%13==0 else 1)
 		chunks = [seq[i*13:(i+1)*13] for i in range(nrows)]
-		additions = ""
 		for cnum,chunk in enumerate(chunks):
 			additions += 'SEQRES  %-2d  %s %-4d  '%(cnum+1,chain,len(sequence))+' '.join(chunk)+'\n'
 		seqres += additions
+	"""
 	for het,num in hetatms.items():
 		resname,chain_id,resnum=het.split(',')
 		seqres += 'HET   %-3s  %s %-4d %5d\n'%(resname.strip(),chain_id,int(resnum),num)
+	"""
 	lines.insert(atom_record_start,seqres)
 	with open(os.path.join(state['step'],settings['target_name']+'.pdb'),'w') as fp:
 		for line in lines: fp.write(line)

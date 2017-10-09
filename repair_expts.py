@@ -10,7 +10,8 @@
 		pdb source: none
 		start structure: ./inputs/2gs7.pdb
 		target name: egfr
-		many models: 1
+		many models: 10
+		refinement: fast
 		number HETATMs: {}
 		numbering: 'uniprot'
 
