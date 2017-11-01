@@ -268,7 +268,7 @@ def get_all_chains(**state):
 									'please ensure that your pdb file is properly formatted')			
 				begin=int(sequence_info[chain]['indexinfo']['cryst_start'])
 				lost=sorted(sequence_info[chain]['missing'].keys())
-				lost=[gone-begin for gone in lost]
+				lost=[int(gone)-begin for gone in lost]
 				template_seq=''.join([AA if i not in lost else '-' for i,AA in enumerate(sequence)])
 			else: template_seq=sequence
 

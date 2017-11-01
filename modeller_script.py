@@ -32,12 +32,12 @@ env.io.atom_files_directory = ['./']
 env.libs.topology.read(file='$(LIB)/top_heav.lib') # read topology
 env.libs.parameters.read(file='$(LIB)/par.lib') # read parameters
 
-afile = 'egfr.ali'
+afile = '%s.ali'%target_name
 a = mymodel(env,
 			alnfile=afile,
 			knowns='start-structure',
 			assess_methods=(assess.DOPE),
-			sequence='egfr')
+			sequence='%s'%target_name)
 
 if refinement=='fast':
 	a.library_schedule = autosched.fast
