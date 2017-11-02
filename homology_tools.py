@@ -286,7 +286,7 @@ def get_all_chains(**state):
 				template_seqs[chain]={'startres':start_idx,'target_seq':sequence,
 									  'template_seq':template_seq,'missing':res_to_model}
 			elif startres-start_idx>=0 and stopres-start_idx<=len(sequence):
-				pre_idx=range(startres-start_idx)
+				pre_idx=range(startres-start_idx-1)
 				post_idx=range(stopres-start_idx,len(sequence))
 				discard_res=pre_idx+post_idx
 				#replace resname with "-" if user requests not to include it
@@ -404,7 +404,7 @@ def get_best_structure(**state):
 			seqres += additions
 	for chain,details in state['chains_info'].items():
 		additions = ""
-		sequence=details['target_seq'].strip('.')
+		sequence=details['target_seq'].strip('.').strip('-')
 		seq = [aacodemap_1to3[i] for i in sequence]
 		seqlen = len(seq)
 		nrows = seqlen/13+(0 if seqlen%13==0 else 1)
